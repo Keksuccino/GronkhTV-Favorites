@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         GRONKH.TV - Favorites Feature
 // @namespace    http://tampermonkey.net/
-// @version      1.3.1
-// @description  Favoriten für Gronkh.TV! Favoriten können im User Dropdown verwaltet werden.
+// @version      1.4.1
+// @description  Favoriten für Gronkh.TV! Favoriten können im User Dropdown verwaltet und umbenannt werden (persistenter Name).
 // @match        https://gronkh.tv/*
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -10,15 +10,24 @@
 
 (function () {
   // ---------- Config ----------
-  const KEY = "favorites.v1";         // storage key
-  const SUBMENU_WIDTH = 360;           // px
+  const KEY = "favorites.v1";         // storage key (unchanged)
+  const SUBMENU_WIDTH = 480;           // px
   const SUBMENU_MAX_VH = 70;           // % of viewport height
   const MAX_VISIBLE_CHARS = 120;       // soft cap for visible text (tooltip shows full)
-  const MAIN_MENU_EXTRA_WIDTH = 1.2;   // multiply existing width by this factor
+  const MAIN_MENU_EXTRA_WIDTH = 1.3;   // multiply existing width by this factor
+  const BUTTONS_AREA_PX = 112;         // approx space for action buttons (rename + remove)
 
   // ---------- Storage ----------
   const loadFavs = () => GM_getValue(KEY, {});
   const saveFavs = (obj) => GM_setValue(KEY, obj);
+
+  // Helper to patch a single favorite entry by key
+  function patchFav(key, patch) {
+    const all = loadFavs();
+    if (!all[key]) return;
+    all[key] = { ...all[key], ...patch };
+    saveFavs(all);
+  }
 
   // ---------- Title detection ----------
   const clean = (s) => (s || "").replace(/\s+/g, " ").trim();
@@ -51,6 +60,14 @@
     if (!str) return "";
     const s = clean(str);
     return s.length > MAX_VISIBLE_CHARS ? s.slice(0, MAX_VISIBLE_CHARS - 1) + "…" : s;
+  }
+  function favTitleForDisplay(f) {
+    return truncateForDisplay(f.customTitle || f.title || f.url);
+  }
+  function favTitleForTooltip(f) {
+    // Show custom name (if any) and the original title/url as context
+    const base = f.title || f.url || "";
+    return f.customTitle ? `${f.customTitle} — ${base}` : base;
   }
 
   // ---------- IDs we inject ----------
@@ -95,7 +112,11 @@
     btn.addEventListener("click", (e) => {
       e.preventDefault();
       const now = loadFavs();
-      if (now[id]) delete now[id]; else now[id] = { title, url, addedAt: Date.now() };
+      if (now[id]) {
+        delete now[id];
+      } else {
+        now[id] = { title, url, addedAt: Date.now() }; // customTitle will be added later if user renames
+      }
       saveFavs(now);
       const nowFav = !!now[id];
       icon.textContent = nowFav ? "bookmark" : "bookmark_border";
@@ -192,9 +213,46 @@
       panel.appendChild(empty);
       return;
     }
+
     entries.forEach(([key, f]) => {
-      const row = makeEl("div", { class: "g-navigation-item", style: "display:flex;align-items:center;gap:.5rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" });
-      const link = makeEl("a", { href: f.url, title: f.title || f.url, style: `flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:${SUBMENU_WIDTH - 72}px;` }, truncateForDisplay(f.title || f.url));
+      const row = makeEl("div", { class: "g-navigation-item", style: "display:flex;align-items:center;gap:.25rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" });
+
+      const link = makeEl("a", {
+        href: f.url,
+        title: favTitleForTooltip(f),
+        style: `flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:${SUBMENU_WIDTH - BUTTONS_AREA_PX}px;`
+      }, favTitleForDisplay(f));
+
+      // Rename button
+      const renameBtn = makeEl("button", {
+        class: "g-navigation-item",
+        title: "Umbenennen",
+        style: "display:flex;align-items:center;gap:.25rem;padding:.2rem .3rem;border:0;background:transparent;"
+      });
+      const pencil = makeEl("i", { class: "material-icons", "aria-hidden": "true" }, "edit");
+      renameBtn.appendChild(pencil);
+
+      renameBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const all = loadFavs();
+        const cur = all[key];
+        if (!cur) return;
+        const current = cur.customTitle || cur.title || cur.url || "";
+        const input = prompt("Neuen Anzeigenamen eingeben (leer lassen zum Zurücksetzen):", current);
+        if (input === null) return; // cancelled
+        const val = clean(input);
+        if (val) {
+          cur.customTitle = val;
+        } else {
+          delete cur.customTitle; // reset to original title
+        }
+        all[key] = cur;
+        saveFavs(all);
+        renderSubmenu(panel);
+      });
+
+      // Remove button
       const remove = makeEl("button", { class: "g-navigation-item", title: "Entfernen", style: "display:flex;align-items:center;gap:.25rem;padding:.2rem .3rem;border:0;background:transparent;" });
       const x = makeEl("i", { class: "material-icons", "aria-hidden": "true" }, "close");
       remove.appendChild(x);
@@ -208,7 +266,11 @@
         // Also sync the parent toggle button state
         refreshToggleUI();
       });
-      row.appendChild(link); row.appendChild(remove); panel.appendChild(row);
+
+      row.appendChild(link);
+      row.appendChild(renameBtn);
+      row.appendChild(remove);
+      panel.appendChild(row);
     });
   }
 
